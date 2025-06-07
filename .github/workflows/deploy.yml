@@ -33,12 +33,17 @@ jobs:
       - name: Build project
         run: npm run build
         
-      - name: Prepare deployment directory
+      - name: Prepare flat deployment structure
         run: |
           mkdir -p deploy
           cp dist/index.html deploy/
-          cp -r dist/assets deploy/
+          cp dist/assets/* deploy/
+          # Update the HTML to reference assets at root level
+          sed -i 's|"/fractal-sound/assets/|"/fractal-sound/|g' deploy/index.html
+          echo "Deployment structure:"
           ls -la deploy/
+          echo "Updated HTML script tag:"
+          grep -n script deploy/index.html
         
       - name: Setup Pages
         uses: actions/configure-pages@v4

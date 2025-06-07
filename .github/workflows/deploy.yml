@@ -33,10 +33,12 @@ jobs:
       - name: Build project
         run: npm run build
         
-      - name: Copy built files to root for GitHub Pages
+      - name: Prepare deployment directory
         run: |
-          cp dist/index.html .
-          cp -r dist/assets .
+          mkdir -p deploy
+          cp dist/index.html deploy/
+          cp -r dist/assets deploy/
+          ls -la deploy/
         
       - name: Setup Pages
         uses: actions/configure-pages@v4
@@ -44,7 +46,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: '.'
+          path: './deploy'
 
   deploy:
     environment:

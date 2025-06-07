@@ -71,3 +71,4 @@ temp/
 
 # Yarn Integrity file
 .yarn-integrity 
+.vercel

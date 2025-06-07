@@ -11,12 +11,107 @@ export const sketch = (p: p5) => {
   let micLevel = 0;
   let audioInitialized = false;
 
+  // Gyroscope variables
+  let gyroInitialized = false;
+  let isMobile = false;
+  let gyroAlpha = 0; // Device rotation around z-axis (compass)
+  let gyroBeta = 0;  // Device rotation around x-axis (tilt front/back)
+  let gyroGamma = 0; // Device rotation around y-axis (tilt left/right)
+  let smoothGyroAlpha = 0;
+  let smoothGyroBeta = 0;
+  let smoothGyroGamma = 0;
+  let gyroBaseAlpha = 0;
+  let gyroBaseBeta = 0;
+  let gyroBaseGamma = 0;
+  let gyroCalibrated = false;
+
   // Fractal variables
   let mandelbrotShader: p5.Shader;
   let zoom = 1;
   let centerX = -0.5;
   let centerY = 0;
   let time = 0;
+
+  // Detect mobile device
+  const detectMobile = () => {
+    const userAgent = navigator.userAgent || navigator.vendor || (window as any).opera;
+    return /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent.toLowerCase()) ||
+      (navigator.maxTouchPoints && navigator.maxTouchPoints > 2 && /MacIntel/.test(navigator.platform));
+  };
+
+  // Initialize gyroscope
+  const initGyroscope = async () => {
+    if (!isMobile) {
+      console.log('📱 Desktop detected - gyroscope disabled');
+      return;
+    }
+
+    console.log('📱 Mobile detected - initializing gyroscope...');
+
+    try {
+      // Request permission for iOS 13+
+      if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+        const permission = await (DeviceOrientationEvent as any).requestPermission();
+        if (permission !== 'granted') {
+          console.log('❌ Gyroscope permission denied');
+          return;
+        }
+      }
+
+      // Add event listener for device orientation
+      window.addEventListener('deviceorientation', handleGyroData, true);
+      gyroInitialized = true;
+      console.log('✅ Gyroscope initialized! Tilt your device to control the fractal!');
+
+    } catch (error) {
+      console.error('❌ Gyroscope initialization failed:', error);
+    }
+  };
+
+  // Handle gyroscope data
+  const handleGyroData = (event: any) => {
+    if (event.alpha != null && event.beta != null && event.gamma != null) {
+      gyroAlpha = Number(event.alpha);
+      gyroBeta = Number(event.beta);
+      gyroGamma = Number(event.gamma);
+
+      // Calibrate on first reading
+      if (!gyroCalibrated) {
+        gyroBaseAlpha = gyroAlpha;
+        gyroBaseBeta = gyroBeta;
+        gyroBaseGamma = gyroGamma;
+        gyroCalibrated = true;
+        console.log('🎯 Gyroscope calibrated!');
+      }
+
+      // Smooth the gyroscope values
+      const smoothingFactor = 0.1;
+      smoothGyroAlpha = smoothGyroAlpha * (1 - smoothingFactor) + (gyroAlpha - gyroBaseAlpha) * smoothingFactor;
+      smoothGyroBeta = smoothGyroBeta * (1 - smoothingFactor) + (gyroBeta - gyroBaseBeta) * smoothingFactor;
+      smoothGyroGamma = smoothGyroGamma * (1 - smoothingFactor) + (gyroGamma - gyroBaseGamma) * smoothingFactor;
+    }
+  };
+
+  // Get gyroscope influence on fractal parameters
+  const getGyroInfluence = () => {
+    if (!gyroInitialized || !gyroCalibrated) {
+      return { centerOffsetX: 0, centerOffsetY: 0, rotationOffset: 0, zoomOffset: 1 };
+    }
+
+    // Map device tilt to fractal center movement
+    const sensitivity = 0.002;
+    const centerOffsetX = smoothGyroGamma * sensitivity; // Left/right tilt
+    const centerOffsetY = smoothGyroBeta * sensitivity;  // Front/back tilt
+
+    // Map device rotation to fractal rotation
+    const rotationOffset = smoothGyroAlpha * 0.01;
+
+    // Map combined tilt to zoom (subtle effect)
+    const tiltMagnitude = Math.sqrt(smoothGyroBeta * smoothGyroBeta + smoothGyroGamma * smoothGyroGamma);
+    const zoomOffset = 1 + Math.sin(tiltMagnitude * 0.01) * 0.1;
+
+    return { centerOffsetX, centerOffsetY, rotationOffset, zoomOffset };
+  };
 
   p.preload = () => {
     // Vertex shader (simple passthrough)
@@ -42,6 +137,7 @@ export const sketch = (p: p5) => {
       uniform float uTime;
       uniform float uAudioLevel;
       uniform float uMaxIterations;
+      uniform float uGyroRotation;
       
       // Improved color palette function for smoother transitions
       vec3 palette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {
@@ -84,8 +180,8 @@ export const sketch = (p: p5) => {
         float audioZoom = 1.0 + uAudioLevel * 2.0;
         vec2 c = uv / (uZoom * breathingZoom * audioZoom) + uCenter;
         
-        // Add rotation over time
-        float angle = uTime * 0.1 + uAudioLevel * 0.5;
+        // Add rotation over time + gyroscope rotation
+        float angle = uTime * 0.1 + uAudioLevel * 0.5 + uGyroRotation;
         float cosA = cos(angle);
         float sinA = sin(angle);
         c = vec2(c.x * cosA - c.y * sinA, c.x * sinA + c.y * cosA);
@@ -185,10 +281,21 @@ export const sketch = (p: p5) => {
       p.createCanvas(window.innerWidth, window.innerHeight, p.WEBGL);
       console.log('✅ WebGL canvas created:', p.width, 'x', p.height);
 
+      // Detect if mobile and initialize gyroscope
+      isMobile = detectMobile();
+      if (isMobile) {
+        console.log('📱 Mobile device detected!');
+      }
+
       console.log('✅ Flowing fractal setup complete!');
 
       // Initialize audio
       setTimeout(initAudio, 100);
+
+      // Initialize gyroscope on mobile
+      if (isMobile) {
+        setTimeout(initGyroscope, 500);
+      }
     } catch (error) {
       console.error('❌ Error in setup:', error);
     }
@@ -239,26 +346,35 @@ export const sketch = (p: p5) => {
       getAudioData();
       time += 0.016; // ~60fps timing
 
+      // Get gyroscope influence
+      const gyroInfluence = getGyroInfluence();
+
       // Dynamic parameters that evolve over time
       const timeVaryingZoom = 1.0 + Math.sin(time * 0.3) * 0.2;
       const audioZoom = audioInitialized ? 1 + micLevel * 1.5 : 1;
+      const gyroZoom = gyroInfluence.zoomOffset;
       const audioIterations = audioInitialized ? 100 + micLevel * 50 : 120;
 
       // Slowly shift the center point for gentle movement
       const centerDrift = 0.0001;
-      centerX += Math.sin(time * 0.1) * centerDrift;
-      centerY += Math.cos(time * 0.13) * centerDrift;
+      const baseCenterX = -0.5 + Math.sin(time * 0.1) * centerDrift;
+      const baseCenterY = 0 + Math.cos(time * 0.13) * centerDrift;
+
+      // Apply gyroscope offset to center
+      centerX = baseCenterX + gyroInfluence.centerOffsetX;
+      centerY = baseCenterY + gyroInfluence.centerOffsetY;
 
       // Apply shader
       p.shader(mandelbrotShader);
 
       // Set uniforms
       mandelbrotShader.setUniform('uResolution', [p.width, p.height]);
-      mandelbrotShader.setUniform('uZoom', zoom * timeVaryingZoom * audioZoom);
+      mandelbrotShader.setUniform('uZoom', zoom * timeVaryingZoom * audioZoom * gyroZoom);
       mandelbrotShader.setUniform('uCenter', [centerX, centerY]);
       mandelbrotShader.setUniform('uTime', time);
       mandelbrotShader.setUniform('uAudioLevel', micLevel);
       mandelbrotShader.setUniform('uMaxIterations', audioIterations);
+      mandelbrotShader.setUniform('uGyroRotation', gyroInfluence.rotationOffset);
 
       // Draw full-screen triangle strip
       p.beginShape(p.TRIANGLE_STRIP);
@@ -271,7 +387,7 @@ export const sketch = (p: p5) => {
       // Reset for UI overlay
       p.resetShader();
 
-      // Minimalist UI overlay
+      // Enhanced UI overlay with gyroscope status
       if (audioInitialized) {
         // Subtle volume indicator
         p.fill(255, 100);
@@ -291,6 +407,25 @@ export const sketch = (p: p5) => {
         p.text('✨ Fractal flows on its own!', -p.width / 2 + 10, -p.height / 2 + 45);
       }
 
+      // Gyroscope status indicator
+      if (isMobile) {
+        p.fill(255, 120);
+        p.textAlign(p.LEFT);
+        if (gyroInitialized && gyroCalibrated) {
+          p.text('📱 Tilt device to control fractal!', -p.width / 2 + 10, -p.height / 2 + (audioInitialized ? 65 : 65));
+          // Gyroscope activity indicator
+          const gyroActivity = Math.abs(smoothGyroGamma) + Math.abs(smoothGyroBeta);
+          if (gyroActivity > 5) {
+            p.fill(100, 255, 100, 150);
+            p.text('🌀 Gyroscope active', -p.width / 2 + 10, -p.height / 2 + (audioInitialized ? 85 : 85));
+          }
+        } else if (gyroInitialized && !gyroCalibrated) {
+          p.text('📱 Calibrating gyroscope...', -p.width / 2 + 10, -p.height / 2 + (audioInitialized ? 65 : 65));
+        } else {
+          p.text('📱 Tap to enable motion control', -p.width / 2 + 10, -p.height / 2 + (audioInitialized ? 65 : 65));
+        }
+      }
+
     } catch (error) {
       console.error('❌ Error in draw:', error);
     }
@@ -304,7 +439,14 @@ export const sketch = (p: p5) => {
   p.mousePressed = () => {
     if (!audioInitialized) {
       initAudio();
-    } else {
+    }
+
+    // Try to initialize gyroscope on mobile devices when user interacts
+    if (isMobile && !gyroInitialized) {
+      initGyroscope();
+    }
+
+    if (!isMobile) {
       isDragging = true;
       lastMouseX = p.mouseX;
       lastMouseY = p.mouseY;
@@ -316,7 +458,7 @@ export const sketch = (p: p5) => {
   };
 
   p.mouseDragged = () => {
-    if (isDragging) {
+    if (isDragging && !isMobile) {
       const dx = (p.mouseX - lastMouseX) / p.width;
       const dy = (p.mouseY - lastMouseY) / p.height;
 
@@ -329,10 +471,12 @@ export const sketch = (p: p5) => {
   };
 
   p.mouseWheel = (event: any) => {
-    const zoomFactor = event.delta > 0 ? 0.95 : 1.05;
-    zoom *= zoomFactor;
-    zoom = Math.max(0.1, Math.min(zoom, 1000));
-    return false; // Prevent page scroll
+    if (!isMobile) {
+      const zoomFactor = event.delta > 0 ? 0.95 : 1.05;
+      zoom *= zoomFactor;
+      zoom = Math.max(0.1, Math.min(zoom, 1000));
+      return false; // Prevent page scroll
+    }
   };
 
   p.keyPressed = () => {
@@ -342,6 +486,14 @@ export const sketch = (p: p5) => {
       centerX = -0.5;
       centerY = 0;
       console.log('🔄 View reset - flow continues');
+    }
+
+    if (p.key === 'g' || p.key === 'G') {
+      // Recalibrate gyroscope
+      if (isMobile && gyroInitialized) {
+        gyroCalibrated = false;
+        console.log('🎯 Gyroscope recalibrating...');
+      }
     }
   };
 
